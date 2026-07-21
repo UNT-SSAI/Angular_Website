@@ -1,3 +1,6 @@
+import { verifyToken, requireSigningSecret } from './_lib/token.js';
+import { isAuthorizedForPath } from './_lib/roles.js';
+
 const allowedMethods = new Set(['GET', 'PUT', 'DELETE']);
 
 export default async function handler(request, response) {
@@ -12,10 +15,33 @@ export default async function handler(request, response) {
     return;
   }
 
+  let secret;
+  try {
+    secret = requireSigningSecret();
+  } catch {
+    response.status(500).send('Session signing secret is not configured. Set SESSION_SIGNING_SECRET in Vercel environment variables.');
+    return;
+  }
+
+  const authHeader = request.headers?.authorization || request.headers?.Authorization || '';
+  const bearerMatch = /^Bearer (.+)$/.exec(authHeader);
+  const session = bearerMatch ? verifyToken(bearerMatch[1], secret) : null;
+  if (!session || typeof session.role !== 'string') {
+    console.warn('GitHub CMS request rejected: missing or invalid officer session token');
+    response.status(401).send('Missing or invalid officer session.');
+    return;
+  }
+
   const { owner, repo, branch, path, init } = request.body ?? {};
   const method = init?.method ?? 'GET';
   if (!owner || !repo || !branch || !path || !allowedMethods.has(method)) {
     response.status(400).send('Invalid GitHub CMS request.');
+    return;
+  }
+
+  if (!isAuthorizedForPath(path, session.role)) {
+    console.warn(`GitHub CMS request rejected: role "${session.role}" is not authorized for path "${path}"`);
+    response.status(403).send('Officer role is not authorized to modify this content.');
     return;
   }
 

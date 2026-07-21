@@ -1,6 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 import { environment } from '../../../environments/environment';
 import { MediaAsset, MediaCategory } from '../../shared/models/content.models';
+import { getOfficerAuthToken } from '../auth/officer-auth-token.store';
 
 class GitHubCmsRequestError extends Error {
   constructor(
@@ -145,9 +146,16 @@ export class GitHubCmsService {
 
   private async request(path: string, init: RequestInit): Promise<unknown> {
     const { owner, repo, branch } = this.settings();
+    const authToken = getOfficerAuthToken();
+    if (!authToken) {
+      throw new Error('Officer session is required to publish CMS changes.');
+    }
     const response = await fetch(environment.githubCms.apiPath, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`
+      },
       body: JSON.stringify({ owner, repo, branch, path, init })
     });
     if (!response.ok) {

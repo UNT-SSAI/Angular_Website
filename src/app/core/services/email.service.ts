@@ -9,11 +9,6 @@ export interface ContactMessage {
   message: string;
 }
 
-export interface OfficerVerificationMessage {
-  email: string;
-  code: string;
-}
-
 @Injectable({ providedIn: 'root' })
 export class EmailService {
   private readonly config = environment.emailjs;
@@ -45,50 +40,5 @@ export class EmailService {
         publicKey: this.config.publicKey
       }
     );
-  }
-
-  async sendOfficerVerificationCode(message: OfficerVerificationMessage): Promise<void> {
-    if (!this.officerConfigured) {
-      throw new Error('Officer email service is not configured yet.');
-    }
-
-    await emailjs.send(
-      this.config.serviceId,
-      this.officerTemplateId,
-      {
-        to_email: message.email,
-        officer_email: message.email,
-        verification_code: message.code,
-        subject: 'SSAI Officer Verification Code',
-        message: [
-          'Hello Officer,',
-          '',
-          `Your verification code is: ${message.code}`,
-          '',
-          'This code expires in 5 minutes.',
-          '',
-          'If you did not request access, please ignore this email.',
-          '',
-          'Society for Student AI Innovation (SSAI)'
-        ].join('\n')
-      },
-      {
-        publicKey: this.config.publicKey
-      }
-    );
-  }
-
-  private get officerConfigured(): boolean {
-    return ![
-      this.config.serviceId,
-      this.officerTemplateId,
-      this.config.publicKey
-    ].some((value) => value.startsWith('YOUR_EMAILJS_'));
-  }
-
-  private get officerTemplateId(): string {
-    return this.config.officerTemplateId.startsWith('YOUR_EMAILJS_')
-      ? this.config.templateId
-      : this.config.officerTemplateId;
   }
 }

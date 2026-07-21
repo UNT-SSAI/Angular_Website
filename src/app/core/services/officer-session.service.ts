@@ -1,7 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
-import { EmailService } from './email.service';
 import { GitHubCmsService } from './github-cms.service';
+import { clearOfficerAuthToken, setOfficerAuthToken } from '../auth/officer-auth-token.store';
 
 export type OfficerRole = 'Super Admin' | 'President' | 'Vice President' | 'Event Coordinator' | 'Technical Lead' | 'Research Lead' | 'Marketing Lead' | 'Secretary' | 'Treasurer';
 
@@ -21,25 +21,15 @@ export interface OfficerRegistryEntry {
   active: boolean;
 }
 
-interface PendingOtp {
+interface PendingOtpTicket {
   email: string;
-  otpHash: string;
-  expiresAt: number;
-  used: boolean;
+  ticket: string;
   resendAttempts: number;
-}
-
-interface OfficerSheetRow {
-  Name?: string;
-  Email?: string;
-  Position?: string;
-  Active?: boolean | string | number;
 }
 
 @Injectable({ providedIn: 'root' })
 export class OfficerSessionService {
   private readonly router = inject(Router);
-  private readonly email = inject(EmailService);
   private readonly github = inject(GitHubCmsService);
   private readonly storageKey = 'officerSession';
   private readonly otpKey = 'officerPendingOtp';
@@ -47,7 +37,6 @@ export class OfficerSessionService {
   private readonly registryPath = 'public/assets/data/officers.json';
   private readonly registryUrl = '/assets/data/officers.json';
   private publishQueue = Promise.resolve();
-  private registryLoadedFromCms = false;
   private readonly warningShown = signal(false);
   private readonly defaultRegistry: OfficerRegistryEntry[] = [
     {
@@ -86,73 +75,72 @@ export class OfficerSessionService {
   }
 
   async sendOtp(email: string, resend = false): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
-    const officer = await this.findOfficerForLogin(email);
-    if (!officer) {
-      return { ok: false, message: 'This email is not registered as an active SSAI officer.' };
-    }
-
+    const normalizedEmail = email.trim().toLowerCase();
     const existing = this.readPendingOtp();
-    const resendAttempts = resend && existing?.email === officer.email.toLowerCase() ? existing.resendAttempts + 1 : 0;
+    const resendAttempts = resend && existing?.email === normalizedEmail ? existing.resendAttempts + 1 : 0;
     if (resendAttempts > 3) {
       return { ok: false, message: 'Maximum resend attempts reached. Please try again later.' };
     }
 
-    const otp = this.generateOtp();
-    const pending: PendingOtp = {
-      email: officer.email.toLowerCase(),
-      otpHash: await this.hashOtp(otp),
-      expiresAt: Date.now() + 5 * 60 * 1000,
-      used: false,
-      resendAttempts
-    };
-    sessionStorage.setItem(this.otpKey, JSON.stringify(pending));
-
+    let result: { ok: boolean; message: string; ticket?: string };
     try {
-      await this.email.sendOfficerVerificationCode({ email: officer.email, code: otp });
-    } catch (error) {
-      sessionStorage.removeItem(this.otpKey);
-      return {
-        ok: false,
-        message: error instanceof Error ? error.message : 'Unable to send verification code. Please try again later.'
-      };
+      const response = await fetch('/api/officer-otp-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: normalizedEmail })
+      });
+      result = await response.json();
+    } catch {
+      return { ok: false, message: 'Unable to send verification code. Please try again later.' };
     }
 
-    return { ok: true, message: 'Verification code sent to the registered officer email.' };
+    if (!result.ok || !result.ticket) {
+      sessionStorage.removeItem(this.otpKey);
+      return { ok: false, message: result.message || 'Unable to send verification code. Please try again later.' };
+    }
+
+    const pending: PendingOtpTicket = { email: normalizedEmail, ticket: result.ticket, resendAttempts };
+    sessionStorage.setItem(this.otpKey, JSON.stringify(pending));
+    return { ok: true, message: result.message };
   }
 
   async verifyOtp(email: string, otp: string): Promise<{ ok: true; session: OfficerSession } | { ok: false; message: string }> {
-    const officer = await this.findOfficerForLogin(email);
+    const normalizedEmail = email.trim().toLowerCase();
     const pending = this.readPendingOtp();
-    if (!officer || !pending || pending.email !== officer.email.toLowerCase()) {
+    if (!pending || pending.email !== normalizedEmail) {
       return { ok: false, message: 'Please request a new verification code.' };
     }
-    if (pending.used || Date.now() > pending.expiresAt) {
-      sessionStorage.removeItem(this.otpKey);
-      return { ok: false, message: 'Verification code has expired. Please request a new code.' };
-    }
-    if (pending.otpHash !== await this.hashOtp(otp.trim())) {
-      return { ok: false, message: 'Invalid verification code.' };
+
+    let result: { ok: boolean; message?: string; token?: string; session?: OfficerSession };
+    try {
+      const response = await fetch('/api/officer-otp-verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: normalizedEmail, otp: otp.trim(), ticket: pending.ticket })
+      });
+      result = await response.json();
+    } catch {
+      return { ok: false, message: 'Unable to verify the code. Please try again.' };
     }
 
-    pending.used = true;
-    sessionStorage.setItem(this.otpKey, JSON.stringify(pending));
-    const loginTime = new Date();
-    const session: OfficerSession = {
-      isOfficer: true,
-      name: officer.name,
-      role: officer.role,
-      email: officer.email,
-      loginTime: loginTime.toISOString(),
-      expiresAt: new Date(loginTime.getTime() + 10 * 60 * 1000).toISOString()
-    };
-    localStorage.setItem(this.storageKey, JSON.stringify(session));
+    if (!result.ok || !result.token || !result.session) {
+      return { ok: false, message: result.message || 'Invalid verification code.' };
+    }
+
     sessionStorage.removeItem(this.otpKey);
-    this.session.set(session);
+    setOfficerAuthToken(result.token);
+    localStorage.setItem(this.storageKey, JSON.stringify(result.session));
+    this.session.set(result.session);
     this.warningShown.set(false);
-    this.message.set(`Welcome ${session.name}`);
-    return { ok: true, session };
+    this.message.set(`Welcome ${result.session.name}`);
+    return { ok: true, session: result.session };
   }
 
+  /**
+   * UI-only gate for showing/hiding admin controls. The real authorization boundary is
+   * server-side in api/github-cms.js, which checks the signed session token's role against
+   * api/_lib/roles.js - this must stay in sync with that mapping but is not itself trusted.
+   */
   canManage(area: 'leadership' | 'events' | 'projects' | 'galleries' | 'officers'): boolean {
     if (!this.requireActiveSession()) return false;
     const role = this.session()?.role;
@@ -167,6 +155,7 @@ export class OfficerSessionService {
   logout(message = 'You have been logged out successfully.'): void {
     localStorage.removeItem(this.storageKey);
     sessionStorage.removeItem(this.otpKey);
+    clearOfficerAuthToken();
     this.session.set(null);
     this.warningShown.set(false);
     this.message.set(message);
@@ -203,52 +192,6 @@ export class OfficerSessionService {
     if (this.session()?.role !== 'Super Admin') return;
     this.officers.set(this.officers().filter((_, itemIndex) => itemIndex !== index));
     this.saveRegistry();
-  }
-
-  private findOfficer(email: string): OfficerRegistryEntry | null {
-    const normalizedEmail = email.trim().toLowerCase();
-    return this.officers().find((officer) => officer.active && officer.email.toLowerCase() === normalizedEmail) ?? null;
-  }
-
-  private async findOfficerForLogin(email: string): Promise<OfficerRegistryEntry | null> {
-    await this.loadOfficerRegistry();
-    const officer = this.findOfficer(email);
-    if (officer) return officer;
-    return this.registryLoadedFromCms ? null : this.findOfficerFromExcel(email);
-  }
-
-  private async findOfficerFromExcel(email: string): Promise<OfficerRegistryEntry | null> {
-    const normalizedEmail = email.trim().toLowerCase();
-    const rows = await this.readOfficerSheet();
-    const row = rows.find((item) => String(item.Email ?? '').trim().toLowerCase() === normalizedEmail);
-    if (!row || !this.isActive(row.Active)) {
-      return null;
-    }
-    return {
-      name: String(row.Name ?? 'SSAI Officer').trim(),
-      email: String(row.Email ?? email).trim(),
-      role: this.normalizeRole(String(row.Position ?? 'President')),
-      active: true
-    };
-  }
-
-  private async readOfficerSheet(): Promise<OfficerSheetRow[]> {
-    const XLSX = await import('xlsx');
-    const response = await fetch('/assets/data/officers.xlsx', { cache: 'no-store' });
-    if (!response.ok) {
-      throw new Error('Unable to load officer registry.');
-    }
-    const buffer = await response.arrayBuffer();
-    const workbook = XLSX.read(buffer, { type: 'array' });
-    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-    return XLSX.utils.sheet_to_json<OfficerSheetRow>(worksheet);
-  }
-
-  private isActive(value: boolean | string | number | undefined): boolean {
-    if (typeof value === 'boolean') {
-      return value;
-    }
-    return ['true', 'yes', '1', 'active'].includes(String(value ?? '').trim().toLowerCase());
   }
 
   private normalizeRole(value: string): OfficerRole {
@@ -289,7 +232,6 @@ export class OfficerSessionService {
       })) : this.defaultRegistry;
       this.officers.set(normalized);
       localStorage.setItem(this.registryKey, JSON.stringify(normalized));
-      this.registryLoadedFromCms = true;
     }
   }
 
@@ -339,6 +281,7 @@ export class OfficerSessionService {
     if (!session) return false;
     if (Date.now() < new Date(session.expiresAt).getTime()) return true;
     localStorage.removeItem(this.storageKey);
+    clearOfficerAuthToken();
     this.session.set(null);
     this.warningShown.set(false);
     if (showExpiredMessage) {
@@ -348,27 +291,15 @@ export class OfficerSessionService {
     return false;
   }
 
-  private readPendingOtp(): PendingOtp | null {
+  private readPendingOtp(): PendingOtpTicket | null {
     const stored = sessionStorage.getItem(this.otpKey);
     if (!stored) return null;
     try {
-      return JSON.parse(stored) as PendingOtp;
+      return JSON.parse(stored) as PendingOtpTicket;
     } catch {
       sessionStorage.removeItem(this.otpKey);
       return null;
     }
-  }
-
-  private generateOtp(): string {
-    const values = new Uint32Array(1);
-    crypto.getRandomValues(values);
-    return String(values[0] % 1000000).padStart(6, '0');
-  }
-
-  private async hashOtp(otp: string): Promise<string> {
-    const data = new TextEncoder().encode(otp);
-    const hash = await crypto.subtle.digest('SHA-256', data);
-    return Array.from(new Uint8Array(hash)).map((value) => value.toString(16).padStart(2, '0')).join('');
   }
 
 }
