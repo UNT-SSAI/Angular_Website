@@ -614,7 +614,7 @@ export class ContentService {
 
   private liveContentUrl(url: string): string {
     if (!url.startsWith('/assets/data/')) return url;
-    return `https://raw.githubusercontent.com/UNT-SSAI/Angular_Website/main/public${url}?t=${Date.now()}`;
+    return `https://raw.githubusercontent.com/sesha456/SSAI_Website/main/public${url}?t=${Date.now()}`;
   }
 
   private nextId(items: Array<{ id: number }>): number {
