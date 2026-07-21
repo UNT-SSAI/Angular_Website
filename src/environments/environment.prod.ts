@@ -3,8 +3,8 @@ export const environment = {
   organizationEmail: 'contact@ssai.org',
   googleMapEmbedUrl: 'https://www.google.com/maps?q=university%20campus&output=embed',
   githubCms: {
-    owner: 'sesha456',
-    repo: 'SSAI_Website',
+    owner: 'UNT-SSAI',
+    repo: 'Angular_Website',
     branch: 'main',
     apiPath: '/api/github-cms'
   },

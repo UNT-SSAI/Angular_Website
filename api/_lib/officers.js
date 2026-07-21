@@ -1,5 +1,5 @@
-const OWNER = process.env.GITHUB_CMS_OWNER || 'sesha456';
-const REPO = process.env.GITHUB_CMS_REPO || 'SSAI_Website';
+const OWNER = process.env.GITHUB_CMS_OWNER || 'UNT-SSAI';
+const REPO = process.env.GITHUB_CMS_REPO || 'Angular_Website';
 const BRANCH = process.env.GITHUB_CMS_BRANCH || 'main';
 const REGISTRY_PATH = 'public/assets/data/officers.json';
 
